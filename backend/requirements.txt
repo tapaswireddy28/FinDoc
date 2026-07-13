@@ -1,0 +1,11 @@
+# Financial RAG - local retrieval, Claude generation via LLM Foundry
+pymupdf                 # PDF text extraction (imports as 'fitz')
+python-pptx             # PPTX slide text/table extraction
+pillow                  # image handling
+langchain-openai        # text-embedding-3-small via the LLM Foundry OpenAI gateway
+numpy                   # vector store / cosine similarity
+langchain-anthropic     # Claude generator + vision OCR via the LLM Foundry gateway
+python-dotenv           # load LLMFOUNDRY_TOKEN (and friends) from a .env file
+fastapi                 # web API
+python-multipart        # file uploads for FastAPI
+uvicorn[standard]       # ASGI server to run the API + web UI

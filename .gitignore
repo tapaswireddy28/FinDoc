@@ -1,0 +1,37 @@
+# ---- Secrets: never commit real tokens ----
+.env
+*.env
+!*.env.example
+!.env.example
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- Node / frontend ----
+node_modules/
+frontend/dist/
+dist/
+# Built frontend served by FastAPI — regenerate with `npm run build`
+backend/static/
+*.log
+npm-debug.log*
+
+# ---- Generated data (regenerated at runtime) ----
+# Uploaded documents — keep the folder, ignore its contents
+data/*
+!data/.gitkeep
+# Vector index built by the backend
+vector_db/*
+!vector_db/.gitkeep
+
+# ---- Local editor / OS / tooling ----
+.claude/settings.local.json
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,190 @@
+==============================================================================
+ FINDOC AI  -  IMPLEMENTATION PROCESS  (Financial Document RAG)
+==============================================================================
+
+WHAT THIS PROJECT IS
+--------------------
+FinDoc AI is a Retrieval-Augmented Generation (RAG) web app for financial
+documents (10-K, 10-Q, earnings decks, any PDF / PPTX / image / TXT). You give
+it a document; it can ANSWER questions about it, SUMMARIZE it, and ANALYZE it.
+Instead of trusting the model's memory, it retrieves the most relevant passages
+from YOUR document and generates from those passages only -> fewer
+hallucinations, and every answer comes with a page / slide citation.
+
+It is a real web application: a FastAPI backend (REST API) + a React (Vite)
+frontend, plus a command-line interface for scripted use.
+
+NOTE: this build is NOT offline. Embeddings and generation run through the
+LLM Foundry gateway (Straive's hosted OpenAI-compatible + Anthropic gateway),
+so it needs the LLMFOUNDRY_TOKEN secret and network access at ingest/query time.
+
+
+THE RAG PIPELINE (HOW IT WORKS)
+-------------------------------
+  Document (PDF / PPTX / image / TXT)
+        |
+   1. PARSE      -> PyMuPDF extracts PDF text page-by-page (keeps page numbers);
+        |            python-pptx reads slides; images are transcribed by the
+        |            configured vision model (OCR); TXT/MD read directly.
+   2. CLEAN      -> remove junk whitespace / control chars
+        |
+   3. CHUNK      -> split into ~160-word overlapping chunks (30-word overlap);
+        |            each chunk remembers its page/slide number = the citation.
+   4. EMBED      -> text-embedding-3-small (1536-dim) via the LLM Foundry
+        |            OpenAI-compatible gateway. Vectors are L2-normalized so a
+        |            dot product == cosine similarity.
+   5. STORE      -> vectors + metadata saved to vector_db/ (NumPy .npy + JSON).
+        |            The folder is auto-created on first ingest.
+  ----------------- (above = INGEST, done once per document) ----------------
+        |
+   6. QUERY      -> the question is embedded with the SAME model.
+        |
+   7. RETRIEVE   -> cosine similarity finds the top-K (=6) chunks; hits below
+        |            the relevance floor (0.15) are dropped as off-topic
+        |            (a single best hit is always kept as a safety net).
+   8. GENERATE   -> a hosted chat model (via LLM Foundry) reads ONLY those
+        |            chunks + the question and writes the answer, told to use
+        |            the context only and cite the page as (p. N).
+        |            If the model/token/network is unavailable, it falls back
+        |            to an extractive answer (returns the best passage).
+   9. CITE       -> answer is returned with the source page/slide numbers.
+
+Summarize and Analyze don't take a question: they sample chunks spread evenly
+across the whole document (up to 24), page-tag them, and ask the model for a
+structured, cited Markdown summary (or analysis with sentiment, themes,
+entities, key figures, and suggested questions).
+
+
+WHY EACH CHOICE
+---------------
+* PyMuPDF (fitz)         : fast, reliable PDF text extraction with page numbers.
+* python-pptx / vision   : so slide decks and image-only pages/scans still work
+                           (images are OCR'd by the configured vision model).
+* Chunking + overlap     : LLMs can't read a 200-page report at once, and
+                           embeddings work best on small focused passages;
+                           overlap stops sentences being cut between chunks.
+* text-embedding-3-small : strong, cheap 1536-dim embeddings via the gateway;
+                           no local model download required.
+* NumPy cosine search    : for one document this is plenty and avoids extra
+                           dependencies. (FAISS/Chroma are drop-in upgrades.)
+* Hosted chat model      : high-quality answers/summaries/analysis. The model
+                           id lives in config.py (LLM_MODEL) so it's swappable.
+* "Answer only from      : the anti-hallucination rule. If the context doesn't
+   the context"            contain the answer, the model must say "Not found in
+                           the document."
+* .env for the token     : secrets load from backend/.env via python-dotenv, so
+                           the run command stays clean -> just `uvicorn app:app`,
+                           with no token or file paths on the command line.
+
+
+FOLDER STRUCTURE
+----------------
+RAG Project/
+  IMPLEMENTATION.txt      <- this file
+  README.md
+  backend/
+    app.py                <- FastAPI app: REST API + serves the built frontend
+    config.py             <- all settings (models, chunk size, top_k, paths) +
+                             loads LLMFOUNDRY_TOKEN from .env
+    parser.py             <- PDF/PPTX/image/TXT extraction + cleaning
+    chunker.py            <- splits text into chunks with page/slide metadata
+    embeddings.py         <- LLM Foundry embeddings client (L2-normalized)
+    vectorstore.py        <- saves/loads vectors, cosine-similarity search
+    generator.py          <- answer / summary / analysis + image OCR
+                             (extractive fallback if the model is unavailable)
+    rag.py                <- ties it together: ingest / ask / summarize / analyze
+    cli.py                <- command-line interface
+    .env                  <- LLMFOUNDRY_TOKEN=...   (NOT committed)
+    .env.example          <- template for the above
+    static/               <- built frontend served by FastAPI at "/"
+    requirements.txt
+  frontend/               <- React + Vite app (FinDoc AI UI)
+    src/App.jsx           <- sidebar app: Upload & Ask, Summarize, Analyze,
+                             History, Streak; voice input; light/dark theme
+    src/App.css, index.css
+    vite.config.js        <- dev server; proxies /api -> http://127.0.0.1:8000
+  data/                   <- documents you ingest (images are NOT stored here)
+  vector_db/              <- generated index (auto-created on first ingest)
+
+
+API ENDPOINTS (backend/app.py)
+------------------------------
+  POST /api/upload     multipart file upload -> ingest, returns {chunks, source}
+  POST /api/ingest     ingest a file already on disk by path
+  POST /api/ask        {question} -> {answer, pages, hits}
+  POST /api/summarize  -> {summary}   (structured, page-cited)
+  POST /api/analyze    -> {analysis}  (sentiment, themes, entities, figures, Qs)
+  GET  /               serves the built frontend from static/ (if present)
+  GET  /favicon.svg    the FinDoc AI logo
+
+
+FRONTEND (what the website does)
+--------------------------------
+* Sidebar navigation (Gmail-style) with pages:
+    - Upload & Ask : drag-drop / pick a file, then ask questions. Includes a
+                     large "TAP TO SPEAK" voice orb (Web Speech API) that
+                     dictates the question. Answers render as Markdown with
+                     page/slide citations and the source passages.
+    - Summarize    : one-click structured summary of the whole document.
+    - Analyze      : structured analysis with a Sentiment verdict badge.
+    - History      : past questions/answers (kept in the browser via
+                     localStorage); revisit or clear.
+    - Streak       : a calendar that tracks days the app was used.
+* Light / dark theme toggle (persisted; follows the OS by default).
+* Copy-friendly Markdown output and page-citation chips.
+
+
+HOW TO RUN
+----------
+1. Install backend deps (once):
+       cd backend
+       python -m pip install -r requirements.txt
+
+2. Add your token: copy .env.example to .env and set it:
+       LLMFOUNDRY_TOKEN=your_token_here
+   (config.py loads this automatically, so the run command needs no secrets.)
+
+3. Run the backend web API (serves on http://127.0.0.1:8000):
+       python -m uvicorn app:app
+   (Use `python -m uvicorn` if plain `uvicorn` is not on your PATH. Add
+   --reload during development.)
+
+4a. Run the frontend dev server (from the project root, in a second terminal):
+       cd frontend
+       npm install        # first time only
+       npm run dev        # open the printed http://localhost:5173 (or 5174)
+   The dev server proxies /api to the backend on port 8000.
+
+4b. OR use the command-line interface instead of the web UI:
+       cd backend
+       python cli.py ingest "../data/AnnualReport.pdf"
+       python cli.py ask "What were total net sales in 2024?"
+       python cli.py summarize
+
+
+IMPLEMENTATION STEPS (the order it was built in)
+------------------------------------------------
+Step 1  config.py      - central settings + load the token from .env.
+Step 2  parser.py      - clean text + page numbers from PDF/PPTX/image/TXT.
+Step 3  chunker.py     - turn that text into retrievable chunks with metadata.
+Step 4  embeddings.py  - embed chunks/queries via the LLM Foundry gateway.
+Step 5  vectorstore.py - persist vectors + metadata; cosine search for top-K.
+Step 6  generator.py   - answer / summarize / analyze + image OCR (with fallback).
+Step 7  rag.py         - orchestrate ingest() / ask() / summarize() / analyze().
+Step 8  app.py         - FastAPI REST API + serve the frontend.
+Step 9  frontend/      - React (Vite) UI: pages, voice input, streak, theming.
+Step 10 cli.py         - simple commands to drive the pipeline from a terminal.
+
+
+WHAT'S NEXT (easy upgrades)
+---------------------------
+* Swap the NumPy store for FAISS or ChromaDB (same interface).
+* Multi-document libraries + per-document indexes.
+* Financial-ratio extraction and company comparison.
+* Hybrid search (keyword + semantic), cross-encoder reranking, query rewriting.
+* Conversation memory for follow-up questions.
+
+The current build demonstrates the full RAG loop end to end:
+parse -> chunk -> embed -> store -> retrieve -> generate -> cite,
+wrapped in a real web app with Ask / Summarize / Analyze.
+==============================================================================
